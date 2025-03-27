@@ -1,20 +1,13 @@
 import os
 
-import psycopg
+from data_loader import load_data
+from mlflow_experiment import start_experiment_run
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import mlflow
 
-TABLE_NAME = "users_churn" # таблица с данными в postgres 
-
-TRACKING_SERVER_HOST = "127.0.0.1"
-TRACKING_SERVER_PORT = 5000
-
-EXPERIMENT_NAME = "churn_barkov_v_v" # напишите название вашего эксперимента
-RUN_NAME = "eda"
-
-ASSETS_DIR = "assets"
+ASSETS_DIR = "../out/assets"
 
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
@@ -24,25 +17,7 @@ pd.options.display.max_rows = 64
 sns.set_style("white")
 sns.set_theme(style="whitegrid")
 
-connection = {"sslmode": "require", "target_session_attrs": "read-write"}
-postgres_credentials = {
-    "host": os.getenv("DB_DESTINATION_HOST"),
-    "port": os.getenv("DB_DESTINATION_PORT"),
-    "dbname": os.getenv("DB_DESTINATION_NAME"),
-    "user": os.getenv("DB_DESTINATION_USER"),
-    "password": os.getenv("DB_DESTINATION_PASSWORD"),
-}
-
-connection.update(postgres_credentials)
-
-with psycopg.connect(**connection) as conn:
-
-    with conn.cursor() as cur:
-        cur.execute(f"SELECT * FROM {TABLE_NAME}")
-        data = cur.fetchall()
-        columns = [col[0] for col in cur.description]
-
-df = pd.DataFrame(data, columns=columns)
+df = load_data()
 
 df.head(2)
 
@@ -63,7 +38,7 @@ axs[0, 0].set_title(f'Count {y} by {x} in train dataframe')
 
 x = "payment_method"
 y = "customer_id"
-# ваш код тут #
+
 agg_df = df.groupby(by=x).agg(count=pd.NamedAgg(column=y, aggfunc=stat[0]))
 sns.barplot(data=agg_df, x=x, y=stat[0], ax=axs[1,0])
 
@@ -73,14 +48,14 @@ axs[1, 0].set_xticklabels(df[x].unique(), rotation = 45);
 x = "internet_service"
 y = "customer_id"
 stat = ["count"]
-# ваш код тут #
+
 agg_df = df.groupby(by=x).agg(count=pd.NamedAgg(column=y, aggfunc=stat[0]))
 sns.barplot(data=agg_df, x=x, y=stat[0], ax=axs[0,1])
 
 x = "gender"
 y = "customer_id"
 stat = ["count"]
-# ваш код тут #
+
 agg_df = df.groupby(by=x).agg(count=pd.NamedAgg(column=y, aggfunc=stat[0]))
 sns.barplot(data=agg_df, x=x, y=stat[0], ax=axs[1,1])
 plt.savefig(os.path.join(ASSETS_DIR, 'cat_features_1'))
@@ -288,19 +263,12 @@ axs[1].set_title(f"{charges[1]} distribution")  # Установка загол�
 # сохранение фигуры с гистограммами в файл
 plt.savefig(os.path.join(ASSETS_DIR, 'chargest_by_target_dist'))
 
-os.environ["MLFLOW_S3_ENDPOINT_URL"] = "https://storage.yandexcloud.net" #endpoint бакета от YandexCloud
-os.environ["AWS_ACCESS_KEY_ID"] = os.getenv("AWS_ACCESS_KEY_ID") # получаем id ключа бакета, к которому подключён MLFlow, из .env
-os.environ["AWS_SECRET_ACCESS_KEY"] = os.getenv("AWS_SECRET_ACCESS_KEY") # получаем ключ бакета, к которому подключён MLFlow, из .env
-
-mlflow.set_tracking_uri(f"http://{TRACKING_SERVER_HOST}:{TRACKING_SERVER_PORT}")
-mlflow.set_registry_uri(f"http://{TRACKING_SERVER_HOST}:{TRACKING_SERVER_PORT}")
-
 EXPERIMENT_NAME = "churn_barkov_v_v"
-RUN_NAME="eda"
+RUN_NAME = "eda"
 
-experiment_id = mlflow.get_experiment_by_name(EXPERIMENT_NAME).experiment_id
-
-with mlflow.start_run(run_name=RUN_NAME, experiment_id=experiment_id) as run:
+def run_entry_point(run):
     run_id = run.info.run_id
     print(run_id)
     mlflow.log_artifacts(ASSETS_DIR) 
+
+start_experiment_run(EXPERIMENT_NAME, RUN_NAME, run_entry_point)

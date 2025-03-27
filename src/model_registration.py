@@ -1,58 +1,24 @@
 from catboost import CatBoostClassifier
 from category_encoders import CatBoostEncoder
+from data_loader import load_data
+from mlflow_experiment import start_experiment_run
 import mlflow
 import os
-import pandas as pd
-import psycopg
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import roc_auc_score, precision_score, recall_score, f1_score, log_loss, confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 
-mlflow.set_tracking_uri("http://0.0.0.0:5000")
-mlflow.set_registry_uri("http://0.0.0.0:5000")
+OUT_DIR = "../out"
+COLUMNS_INFO_PATH = f"{OUT_DIR}/columns.txt"
+DATASET_PATH = f"{OUT_DIR}/users_churn.csv"
 
-os.environ["MLFLOW_S3_ENDPOINT_URL"] = "https://storage.yandexcloud.net" #endpoint бакета от YandexCloud
-os.environ["AWS_ACCESS_KEY_ID"] = os.getenv("AWS_ACCESS_KEY_ID") # получаем id ключа бакета, к которому подключён MLFlow, из .env
-os.environ["AWS_SECRET_ACCESS_KEY"] = os.getenv("AWS_SECRET_ACCESS_KEY") # получаем ключ бакета, к которому подключён MLFlow, из .env
+os.makedirs(OUT_DIR, exist_ok=True)
 
-connection = {"sslmode": "require", "target_session_attrs": "read-write"}
-postgres_credentials = {
-    "host": os.getenv("DB_DESTINATION_HOST"), 
-    "port": os.getenv("DB_DESTINATION_PORT"),
-    "dbname": os.getenv("DB_DESTINATION_NAME"),
-    "user": os.getenv("DB_DESTINATION_USER"),
-    "password": os.getenv("DB_DESTINATION_PASSWORD"),
-}
-assert all([var_value != "" for var_value in list(postgres_credentials.values())])
-print(postgres_credentials)
-connection.update(postgres_credentials)
+df = load_data()
 
-# определим название таблицы, в которой хранятся наши данные.
-TABLE_NAME = "clean_users_churn"
-
-# эта конструкция создаёт контекстное управление для соединения с базой данных 
-# оператор with гарантирует, что соединение будет корректно закрыто после выполнения всех операций 
-# закрыто оно будет даже в случае ошибки, чтобы не допустить "утечку памяти"
-with psycopg.connect(**connection) as conn:
-
-# создаёт объект курсора для выполнения запросов к базе данных
-# с помощью метода execute() выполняется SQL-запрос для выборки данных из таблицы TABLE_NAME
-    with conn.cursor() as cur:
-        cur.execute(f"SELECT * FROM {TABLE_NAME}")
-                
-                # извлекаем все строки, полученные в результате выполнения запроса
-        data = cur.fetchall()
-
-                # получает список имён столбцов из объекта курсора
-        columns = [col[0] for col in cur.description]
-
-# создаёт объект DataFrame из полученных данных и имён столбцов. 
-# это позволяет удобно работать с данными в Python, используя библиотеку Pandas.
-df = pd.DataFrame(data, columns=columns)
-
-with open("columns.txt", "w", encoding="utf-8") as fio:
+with open(COLUMNS_INFO_PATH, "w", encoding="utf-8") as fio:
     fio.write(",".join(df.columns))
 
 counts_columns = [
@@ -83,23 +49,14 @@ stats["total_charges_median"] = df["total_charges"].median()
 stats["unique_customers_number"] = len(df["customer_id"].unique())
 stats["end_date_nan"] = df["end_date"].isnull().sum()
 
-df.to_csv("users_churn.csv", index=False) 
+df.to_csv(DATASET_PATH, index=False) 
 
 EXPERIMENT_NAME = "churn_barkov_v_v"
 RUN_NAME = "fit_model"
 REGISTRY_MODEL_NAME = "churn_model_barkov_v_v"
+model_predictions = None
 
-
-experiment = mlflow.get_experiment_by_name(EXPERIMENT_NAME)
-if experiment is not None:
-    experiment_id = experiment.experiment_id
-else:
-    experiment_id = mlflow.create_experiment(EXPERIMENT_NAME)
-
-with mlflow.start_run(run_name=RUN_NAME, experiment_id=experiment_id) as run:
-    # получаем уникальный идентификатор запуска эксперимента
-    run_id = run.info.run_id
-    
+def fit_model(run):
     # логируем метрики эксперимента
     # предполагается, что переменная stats содержит словарь с метриками,
     # где ключи — это названия метрик, а значения — числовые значения метрик
@@ -114,8 +71,6 @@ with mlflow.start_run(run_name=RUN_NAME, experiment_id=experiment_id) as run:
         test_size=0.2,
         random_state=42)
     metrics = {}
-    
-
 
     cat_features = X_train.select_dtypes(include='object')
     potential_binary_features = cat_features.nunique() == 2
@@ -167,7 +122,7 @@ with mlflow.start_run(run_name=RUN_NAME, experiment_id=experiment_id) as run:
 
     mlflow.log_metrics(metrics)
 
-    pip_requirements = "requirements.txt"
+    pip_requirements = "../requirements.txt"
     print("X_test:")
     print(X_test.info())
     print("X_test:")
@@ -198,21 +153,18 @@ with mlflow.start_run(run_name=RUN_NAME, experiment_id=experiment_id) as run:
     print(model_predictions[:10])
 
     # логируем файлы как артефакты эксперимента — 'columns.txt' и 'users_churn.csv'
-    mlflow.log_artifact("columns.txt", "dataframe")
-    mlflow.log_artifact("users_churn.csv", "dataframe")
+    mlflow.log_artifact(COLUMNS_INFO_PATH, "dataframe")
+    mlflow.log_artifact(DATASET_PATH, "dataframe")
 
-experiment = mlflow.get_experiment_by_name(EXPERIMENT_NAME)
+    #os.remove(COLUMNS_INFO_PATH)
+    #os.remove(DATASET_PATH)
+
+run_id = start_experiment_run(EXPERIMENT_NAME, RUN_NAME, fit_model)
+
 # получаем данные о запуске эксперимента по его уникальному идентификатору
 run = mlflow.get_run(run_id)
-
-assert model_predictions.dtype == int
-
-print(model_predictions[:10])
 
 # проверяем, что статус запуска эксперимента изменён на 'FINISHED'
 # это утверждение (assert) можно использовать для автоматической проверки того, 
 # что эксперимент был завершён успешно
 assert run.info.status=="FINISHED"
-
-os.remove("columns.txt")
-os.remove("users_churn.csv")

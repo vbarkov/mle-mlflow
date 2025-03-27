@@ -1,8 +1,9 @@
 import os
 from catboost import CatBoostClassifier
+from data_loader import load_data
+from mlflow_experiment import start_experiment_run
 
 import pandas as pd
-import psycopg
 import mlflow
 from sklearn.metrics import roc_auc_score, precision_score, recall_score, f1_score, log_loss, confusion_matrix
 
@@ -18,43 +19,7 @@ from sklearn.preprocessing import (
     KBinsDiscretizer,
 )
 
-TABLE_NAME = "clean_users_churn"
-
-TRACKING_SERVER_HOST = "127.0.0.1"
-TRACKING_SERVER_PORT = 5000
-
-EXPERIMENT_NAME = "churn_barkov_v_v"
-RUN_NAME = "preprocessing" 
-REGISTRY_MODEL_NAME = "churn_model_barkov_v_v"
-
-connection = {"sslmode": "require", "target_session_attrs": "read-write"}
-postgres_credentials = {
-    "host": os.getenv("DB_DESTINATION_HOST"), 
-    "port": os.getenv("DB_DESTINATION_PORT"),
-    "dbname": os.getenv("DB_DESTINATION_NAME"),
-    "user": os.getenv("DB_DESTINATION_USER"),
-    "password": os.getenv("DB_DESTINATION_PASSWORD"),
-}
-connection.update(postgres_credentials)
-# эта конструкция создаёт контекстное управление для соединения с базой данных 
-# оператор with гарантирует, что соединение будет корректно закрыто после выполнения всех операций 
-# закрыто оно будет даже в случае ошибки, чтобы не допустить "утечку памяти"
-with psycopg.connect(**connection) as conn:
-
-# создаёт объект курсора для выполнения запросов к базе данных
-# с помощью метода execute() выполняется SQL-запрос для выборки данных из таблицы TABLE_NAME
-    with conn.cursor() as cur:
-        cur.execute(f"SELECT * FROM {TABLE_NAME}")
-                
-                # извлекаем все строки, полученные в результате выполнения запроса
-        data = cur.fetchall()
-
-                # получает список имён столбцов из объекта курсора
-        columns = [col[0] for col in cur.description]
-
-# создаёт объект DataFrame из полученных данных и имён столбцов. 
-# это позволяет удобно работать с данными в Python, используя библиотеку Pandas.
-df = pd.DataFrame(data, columns=columns)
+df = load_data()
 
 obj_df = df.select_dtypes(include="object")
 
@@ -195,16 +160,11 @@ transformed_df = pd.DataFrame(encoded_features, columns=preprocessor.get_feature
 df = pd.concat([df, transformed_df], axis=1)
 df.head(2)
 
-os.environ["MLFLOW_S3_ENDPOINT_URL"] = "https://storage.yandexcloud.net" #endpoint бакета от YandexCloud
-os.environ["AWS_ACCESS_KEY_ID"] = os.getenv("AWS_ACCESS_KEY_ID") # получаем id ключа бакета, к которому подключён MLFlow, из .env
-os.environ["AWS_SECRET_ACCESS_KEY"] = os.getenv("AWS_SECRET_ACCESS_KEY") # получаем ключ бакета, к которому подключён MLFlow, из .env
+EXPERIMENT_NAME = "churn_barkov_v_v"
+RUN_NAME = "preprocessing" 
+REGISTRY_MODEL_NAME = "churn_model_barkov_v_v"
 
-mlflow.set_tracking_uri(f"http://{TRACKING_SERVER_HOST}:{TRACKING_SERVER_PORT}")
-mlflow.set_registry_uri(f"http://{TRACKING_SERVER_HOST}:{TRACKING_SERVER_PORT}")
-
-experiment_id = mlflow.get_experiment_by_name(EXPERIMENT_NAME).experiment_id
-
-with mlflow.start_run(run_name=RUN_NAME, experiment_id=experiment_id) as run:
+def run_entry_point(run):
     run_id = run.info.run_id
     print(run_id)
     mlflow.sklearn.log_model(preprocessor, "column_transformer") 
@@ -248,7 +208,7 @@ with mlflow.start_run(run_name=RUN_NAME, experiment_id=experiment_id) as run:
 
     mlflow.log_metrics(metrics)
 
-    pip_requirements = "requirements.txt"
+    pip_requirements = "../requirements.txt"
     print("X_test:")
     print(X_test.info())
     print("X_test:")
@@ -277,3 +237,5 @@ with mlflow.start_run(run_name=RUN_NAME, experiment_id=experiment_id) as run:
     assert model_predictions.dtype == int
 
     print(model_predictions[:10])
+
+start_experiment_run(EXPERIMENT_NAME, RUN_NAME, run_entry_point)
