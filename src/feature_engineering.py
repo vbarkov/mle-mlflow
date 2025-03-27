@@ -1,6 +1,7 @@
 import os
 from catboost import CatBoostClassifier
 from data_loader import load_data
+from metrics import calculate_metrics
 from mlflow_experiment import start_experiment_run
 
 import pandas as pd
@@ -174,7 +175,6 @@ def run_entry_point(run):
         df["target"], 
         test_size=0.2,
         random_state=42)
-    metrics = {}
     model = CatBoostClassifier(auto_class_weights='Balanced')
 
     pipeline = Pipeline(
@@ -188,39 +188,15 @@ def run_entry_point(run):
     prediction = pipeline.predict(X_test)
     probas = pipeline.predict_proba(X_test)[:, 1]
 
-    # посчитайте метрики из модуля sklearn.metrics
-    # err_1 — ошибка первого рода
-    # err_2 — ошибка второго рода
-    _, err1, _, err2 = confusion_matrix(y_test, prediction, normalize='all').ravel()
-    auc = roc_auc_score(y_test, probas)
-    precision = precision_score(y_test, prediction)
-    recall = recall_score(y_test, prediction)
-    f1 = f1_score(y_test, prediction)
-    logloss = log_loss(y_test, prediction)
-
-    metrics["err1"] = err1
-    metrics["err2"] = err2
-    metrics["auc"] = auc
-    metrics["precision"] = precision
-    metrics["recall"] = recall
-    metrics["f1"] = f1
-    metrics["logloss"] = logloss
+    metrics = calculate_metrics(y_test, prediction, probas)
 
     mlflow.log_metrics(metrics)
 
     pip_requirements = "../requirements.txt"
-    print("X_test:")
-    print(X_test.info())
-    print("X_test:")
-    print(X_test)
-    print("y_test:")
-    print(y_test)
-
     signature = mlflow.models.infer_signature(X_test, y_test)
     input_example = X_test[:10]
     metadata = {"model_type": "monthly"}
-    print(os.environ["AWS_ACCESS_KEY_ID"])
-    print(os.environ["AWS_SECRET_ACCESS_KEY"])
+
     model_info = mlflow.sklearn.log_model(
         sk_model=pipeline,
         artifact_path="models",
